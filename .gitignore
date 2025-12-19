@@ -1,0 +1,27 @@
+# Unreal Engine Plugin - Ignore List
+
+# 核心二进制与中间件
+Binaries/
+Intermediate/
+DerivedDataCache/
+
+# 编译相关
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# IDE 配置文件
+.vs/
+.vscode/
+
+# 平台生成的临时文件
+*.pdb
+*.obj
+*.exe
+*.dll
+
+# 忽略本地 Git 之外的其他隐藏文件夹 (可选)
+.DS_Store
