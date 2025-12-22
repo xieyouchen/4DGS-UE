@@ -29,7 +29,18 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Gaussian Splatting")
 	FLinearColor Color;
 
-	FGaussianSplattingPoint(FVector3f InPos = FVector3f::ZeroVector, FQuat4f InQuat = FQuat4f::Identity, FVector3f InScale = {1,1,1}, FLinearColor InColor = FLinearColor::Black);
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Gaussian Splatting")
+	FVector4f Time;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Gaussian Splatting")
+	FVector4f Motion;
+
+	FGaussianSplattingPoint(FVector3f InPos = FVector3f::ZeroVector,
+		FQuat4f InQuat = FQuat4f::Identity,
+		FVector3f InScale = { 1,1,1 },
+		FLinearColor InColor = FLinearColor::Black,
+		FVector4f InTime = FVector4f(0.f, 0.f, 0.f, 0.f),
+		FVector4f InMotion = FVector4f(0.f, 0.f, 0.f, 0.f));
 
 	bool operator==(const FGaussianSplattingPoint& Other)const;
 	bool operator!=(const FGaussianSplattingPoint& Other)const;
@@ -37,14 +48,27 @@ public:
 
 	friend FORCEINLINE uint32 GetTypeHash(const FGaussianSplattingPoint& ID)
 	{
-		return HashCombine(HashCombine(HashCombine(GetTypeHash(ID.Position), GetTypeHash(ID.Quat)), GetTypeHash(ID.Scale)), GetTypeHash(ID.Color));
+		return	HashCombine(
+			HashCombine(
+				HashCombine(
+					HashCombine(
+						HashCombine(
+							GetTypeHash(ID.Position),
+							GetTypeHash(ID.Quat)),
+						GetTypeHash(ID.Scale)),
+					GetTypeHash(ID.Color)),
+				GetTypeHash(ID.Time)),
+			GetTypeHash(ID.Motion));
 	}
+
 	friend FORCEINLINE FArchive& operator<<(FArchive& Ar, FGaussianSplattingPoint& Point)
 	{
 		Ar << Point.Position;
 		Ar << Point.Quat;
 		Ar << Point.Scale;
 		Ar << Point.Color;
+		Ar << Point.Time;
+		Ar << Point.Motion;
 		return Ar;
 	}
 };

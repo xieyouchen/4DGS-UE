@@ -12,10 +12,20 @@
 
 const float SH_0 = 0.28209479177387814f;
 
-FGaussianSplattingPoint::FGaussianSplattingPoint(FVector3f InPos /*= FVector3f::ZeroVector*/, FQuat4f InQuat /*= FQuat4f::Identity*/, FVector3f InScale /*= {1,1,1}*/, FLinearColor InColor /*= FLinearColor::Black*/) : Position(InPos)
-, Quat(InQuat)
-, Scale(InScale)
-, Color(InColor)
+FGaussianSplattingPoint::FGaussianSplattingPoint(
+	FVector3f InPos /*= FVector3f::ZeroVector*/, 
+	FQuat4f InQuat /*= FQuat4f::Identity*/, 
+	FVector3f InScale /*= {1,1,1}*/, 
+	FLinearColor InColor /*= FLinearColor::Black*/,
+	FVector4f InTime /*= FVector4f::ZeroVector*/,
+    FVector4f InMotion /*= FVector4f::ZeroVector*/)
+	: 
+	Position(InPos),
+	Quat(InQuat),
+	Scale(InScale),
+	Color(InColor),
+	Time(InTime),
+	Motion(InMotion)
 {
 
 }
@@ -174,6 +184,10 @@ TArray<FGaussianSplattingPoint> ParseSplatFromStream(std::istream& in)
 	const std::vector<int> colorIdx = { index("f_dc_0"), index("f_dc_1"),
 									   index("f_dc_2") };
 
+	const std::vector<int> stgsIdx = { index("trbf_center"), index("trbf_scale"),
+								index("motion_0"), index("motion_1"),
+								index("motion_2"), index("motion_3"),
+								index("motion_4"), index("motion_5") };
 
 	// Check that only valid indices were returned.
 	auto checkIndices = [&](const std::vector<int>& idxVec) -> bool {
@@ -222,6 +236,27 @@ TArray<FGaussianSplattingPoint> ParseSplatFromStream(std::istream& in)
 	for (size_t i = 0; i < static_cast<size_t>(numPoints); i++) {
 		size_t vertexOffset = i * fields.size();
 		FGaussianSplattingPoint& Point = Result[i];
+
+		// Time, Motion
+		float Time = values[vertexOffset + stgsIdx[0]];
+		float trbf_scale = values[vertexOffset + stgsIdx[1]];
+		std::vector<float> Motion = {
+			values[vertexOffset + stgsIdx[2]],
+			values[vertexOffset + stgsIdx[3]],
+			values[vertexOffset + stgsIdx[4]],
+			values[vertexOffset + stgsIdx[5]],
+			values[vertexOffset + stgsIdx[6]],
+			values[vertexOffset + stgsIdx[7]]
+		};
+		
+		Point.Time = FVector4f(Time, trbf_scale, Motion[0], -Motion[2]);
+		Point.Motion = FVector4f(-Motion[1], Motion[3], -Motion[5], -Motion[4]);
+
+		if (i == 0) {
+			UE_LOG(LogTemp, Log, TEXT("Time: %f"), Time);
+			UE_LOG(LogTemp, Log, TEXT("trbf_scale: %f"), trbf_scale);
+			UE_LOG(LogTemp, Log, TEXT("Motion: %f, %f, %f, %f, %f, %f"), Motion[0], Motion[1], Motion[2], Motion[3], Motion[4], Motion[5]);
+		}
 
 		// Position
 		FVector3f Position = FVector3f(

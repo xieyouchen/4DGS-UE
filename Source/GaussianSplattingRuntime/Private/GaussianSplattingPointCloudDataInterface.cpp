@@ -64,13 +64,18 @@ void FNiagaraDataInterfaceProxyGaussianSplattingPointCloud::PostDataToGPU()
 	}
 	const TArray<FGaussianSplattingPoint>& Points = Owner->PointCloud->GetPoints();
 	TArray<FVector4f> PointData;
-	PointData.SetNum(Points.Num() * 4);
+
+	const int size_times = 6;
+
+	PointData.SetNum(Points.Num() * size_times);
 	for (int i = 0; i < Points.Num(); i++) {
 		const FGaussianSplattingPoint& Point = Points[i];
-		PointData[i * 4] = Point.Position;
-		PointData[i * 4 + 1] = FVector4f(Point.Quat.X, Point.Quat.Y, Point.Quat.Z, Point.Quat.W);
-		PointData[i * 4 + 2] = Point.Scale;
-		PointData[i * 4 + 3] = Point.Color;
+		PointData[i * size_times] = Point.Position;
+		PointData[i * size_times + 1] = FVector4f(Point.Quat.X, Point.Quat.Y, Point.Quat.Z, Point.Quat.W);
+		PointData[i * size_times + 2] = Point.Scale;
+		PointData[i * size_times + 3] = Point.Color;
+		PointData[i * size_times + 4] = Point.Time;
+		PointData[i * size_times + 5] = Point.Motion;
 	}
 
 	ENQUEUE_RENDER_COMMAND(FUpdateSpectrumBuffer)(
@@ -120,6 +125,7 @@ void UNiagaraDataInterfaceGaussianSplattingPointCloud::GetFunctions(TArray<FNiag
 		GetPointDataSignature.Name = GetPointDataFunctionName;
 		GetPointDataSignature.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("GaussianSplattingPointCloud")));
 		GetPointDataSignature.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index")));
+		GetPointDataSignature.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Time")));
 		GetPointDataSignature.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position")));
 		GetPointDataSignature.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Quat")));
 		GetPointDataSignature.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Scale")));
@@ -193,13 +199,13 @@ void UNiagaraDataInterfaceGaussianSplattingPointCloud::GetPointData(FVectorVMExt
 		int32 Index = InIndex.Get();
 		FGaussianSplattingPoint& Point = Points[Index];
 		*PosX.GetDest() = Point.Position.X;
-		*PosX.GetDest() = Point.Position.X;
-		*PosX.GetDest() = Point.Position.X;
+		*PosY.GetDest() = Point.Position.Y;
+		*PosZ.GetDest() = Point.Position.Z;
 
 		*QuatX.GetDest() = Point.Quat.X;
 		*QuatY.GetDest() = Point.Quat.Y;
 		*QuatZ.GetDest() = Point.Quat.Z;
-		*QuatZ.GetDest() = Point.Quat.Z;
+		*QuatW.GetDest() = Point.Quat.W;
 
 		*ScaleX.GetDest() = Point.Scale.X;
 		*ScaleY.GetDest() = Point.Scale.Y;
@@ -219,7 +225,7 @@ void UNiagaraDataInterfaceGaussianSplattingPointCloud::GetPointData(FVectorVMExt
 		QuatX.Advance();
 		QuatY.Advance();
 		QuatZ.Advance();
-		QuatZ.Advance();
+		QuatW.Advance();
 
 		ScaleX.Advance();
 		ScaleY.Advance();
@@ -260,20 +266,39 @@ bool UNiagaraDataInterfaceGaussianSplattingPointCloud::GetFunctionHLSL(
 	bool ParentRet = Super::GetFunctionHLSL(ParamInfo, FunctionInfo, FunctionInstanceIndex, OutHLSL);
 	if (ParentRet)
 	{
+		UE_LOG(LogTemp, Log, TEXT("ParentRet"));
 		return true;
 	}
 	else if (FunctionInfo.DefinitionName == GetPointDataFunctionName)
 	{
 		static const TCHAR* FormatBounds = TEXT(R"(
-			void {FunctionName}(int In_PointIndex, out float3 Out_Position, out float4 Out_Quat, out float3 Out_Scale, out float4 Out_Color)
+			void {FunctionName}(int In_PointIndex, float In_Time, out float3 Out_Position, out float4 Out_Quat, out float3 Out_Scale, out float4 Out_Color)
 			{
 				int PointIndex = In_PointIndex < {PointCount} ? In_PointIndex : {PointCount} - 1;
-				Out_Position = {PointDataBuffer}.Load(PointIndex * 4 ).xyz;
-				Out_Quat = {PointDataBuffer}.Load(PointIndex * 4 + 1);
-				Out_Scale = {PointDataBuffer}.Load(PointIndex * 4 + 2).xyz;
-				Out_Color = {PointDataBuffer}.Load(PointIndex * 4 + 3);
+				Out_Position = {PointDataBuffer}.Load(PointIndex * 6 ).xyz;
+				Out_Quat = {PointDataBuffer}.Load(PointIndex *     6 + 1);
+				Out_Scale = {PointDataBuffer}.Load(PointIndex *	   6 + 2).xyz;
+				Out_Color = {PointDataBuffer}.Load(PointIndex *    6 + 3);
+
+
+                float4 Out_Time = {PointDataBuffer}.Load(PointIndex *     6 + 4);
+                float4 Out_Motion = {PointDataBuffer}.Load(PointIndex *   6 + 5);
+				
+				float time = fmod(In_Time, 5.0f) / 5.0f;
+                float dt = time - Out_Time.x;
+				float3 V = float3(Out_Time.z, Out_Time.w, Out_Motion.x);
+				float3 A = float3(Out_Motion.y, Out_Motion.z, Out_Motion.w);
+				float3 Offset = V * dt + A * (dt * dt);
+                Out_Position = Out_Position + Offset;
+				float trbf_val = dt / exp(Out_Time.y);
+				float visibility = exp(-1.0f * trbf_val * trbf_val);
+
+				Out_Color.a *= visibility;	
 			}
 		)");
+
+		UE_LOG(LogTemp, Log, TEXT("GetPointDataFunctionName"));
+		UE_LOG(LogTemp, Log, TEXT("%s"), *FunctionInfo.InstanceName);
 
 		TMap<FString, FStringFormatArg> ArgsBounds = {
 			{TEXT("FunctionName"), FStringFormatArg(FunctionInfo.InstanceName)},
@@ -285,6 +310,7 @@ bool UNiagaraDataInterfaceGaussianSplattingPointCloud::GetFunctionHLSL(
 	}
 	else if (FunctionInfo.DefinitionName == GetPointCountFunctionName)
 	{
+		UE_LOG(LogTemp, Log, TEXT("GetPointCountFunctionName"));
 		static const TCHAR* FormatBounds = TEXT(R"(
 			void {FunctionName}(out int Out_Val)
 			{
@@ -300,6 +326,7 @@ bool UNiagaraDataInterfaceGaussianSplattingPointCloud::GetFunctionHLSL(
 	}
 	else
 	{
+		UE_LOG(LogTemp, Log, TEXT("False"));
 		return false;
 	}
 }
