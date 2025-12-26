@@ -57,6 +57,7 @@ FRichCurve UGaussianSplattingPointCloud::CalcFeatureCurve()
 	for (int i = 0; i < Points.Num(); i += Step) {
 		auto KeyHandle = Curve.AddKey(4 * Points[i].Scale.Length(), i);
 		Curve.SetKeyInterpMode(KeyHandle, ERichCurveInterpMode::RCIM_Constant);
+		UE_LOG(LogTemp, Warning, TEXT("AddKey %f %d"), 4 * Points[i].Scale.Length(), i);
 	}
 	return Curve;
 }
@@ -248,9 +249,11 @@ TArray<FGaussianSplattingPoint> ParseSplatFromStream(std::istream& in)
 			values[vertexOffset + stgsIdx[6]],
 			values[vertexOffset + stgsIdx[7]]
 		};
-		
-		Point.Time = FVector4f(Time, trbf_scale, Motion[0], -Motion[2]);
-		Point.Motion = FVector4f(-Motion[1], Motion[3], -Motion[5], -Motion[4]);
+		int times = 100;
+
+		Point.Time = FVector4f(Time, trbf_scale, times * Motion[0], times * -Motion[2]);
+		Point.Motion = times * FVector4f(-Motion[1], Motion[3], -Motion[5], -Motion[4]);
+
 
 		if (i == 0) {
 			UE_LOG(LogTemp, Log, TEXT("Time: %f"), Time);
@@ -264,7 +267,7 @@ TArray<FGaussianSplattingPoint> ParseSplatFromStream(std::istream& in)
 			values[vertexOffset + positionIdx[1]],
 			values[vertexOffset + positionIdx[2]]
 		);
-		Point.Position = 100 * FVector3f(Position.X, -Position.Z, -Position.Y);
+		Point.Position = times * FVector3f(Position.X, -Position.Z, -Position.Y);
 
 		// Scale
 		FVector3f Scale = FVector3f(
@@ -272,7 +275,7 @@ TArray<FGaussianSplattingPoint> ParseSplatFromStream(std::istream& in)
 			FMath::Exp(values[vertexOffset + scaleIdx[1]]),
 			FMath::Exp(values[vertexOffset + scaleIdx[2]])
 		);
-		Point.Scale = 100 * FVector3f(Scale.X, Scale.Z, Scale.Y);
+		Point.Scale = times * FVector3f(Scale.X, Scale.Z, Scale.Y);
 
 		// Rotation
 		FQuat4f Quat = FQuat4f(
@@ -285,11 +288,10 @@ TArray<FGaussianSplattingPoint> ParseSplatFromStream(std::istream& in)
 
 		Point.Quat = FQuat4f(Quat.X, -Quat.Z, -Quat.Y, Quat.W);
 
-		// Color
 		FLinearColor Color = FLinearColor(
-			SH_0 * values[vertexOffset + colorIdx[0]] + 0.5f,
-			SH_0 * values[vertexOffset + colorIdx[1]] + 0.5f,
-			SH_0 * values[vertexOffset + colorIdx[2]] + 0.5f,
+			values[vertexOffset + colorIdx[0]],
+			values[vertexOffset + colorIdx[1]],
+			values[vertexOffset + colorIdx[2]],
 			1.0f / (1.0f + FMath::Exp(-values[vertexOffset + alphaIdx[0]]))
 		);
 		Point.Color = SRGBToLinear(Color);

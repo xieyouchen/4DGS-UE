@@ -262,7 +262,7 @@ bool UNiagaraDataInterfaceGaussianSplattingPointCloud::AppendCompileHash(FNiagar
 bool UNiagaraDataInterfaceGaussianSplattingPointCloud::GetFunctionHLSL(
 	const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, 
 	const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
-{
+ {
 	bool ParentRet = Super::GetFunctionHLSL(ParamInfo, FunctionInfo, FunctionInstanceIndex, OutHLSL);
 	if (ParentRet)
 	{
@@ -284,7 +284,8 @@ bool UNiagaraDataInterfaceGaussianSplattingPointCloud::GetFunctionHLSL(
                 float4 Out_Time = {PointDataBuffer}.Load(PointIndex *     6 + 4);
                 float4 Out_Motion = {PointDataBuffer}.Load(PointIndex *   6 + 5);
 				
-				float time = fmod(In_Time, 5.0f) / 5.0f;
+				float time = fmod(In_Time, 5.0f);
+
                 float dt = time - Out_Time.x;
 				float3 V = float3(Out_Time.z, Out_Time.w, Out_Motion.x);
 				float3 A = float3(Out_Motion.y, Out_Motion.z, Out_Motion.w);

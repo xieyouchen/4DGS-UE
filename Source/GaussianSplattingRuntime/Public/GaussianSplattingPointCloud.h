@@ -107,6 +107,6 @@ private:
 	UPROPERTY(Transient)
 	TArray<FGaussianSplattingPoint> Points;
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = "Gaussian Splatting")
 	uint32 FeatureLevel = 64;
 };
