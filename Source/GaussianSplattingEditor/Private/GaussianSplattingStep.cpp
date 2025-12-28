@@ -22,6 +22,10 @@
 #include "GaussianSplattingEditorLibrary.h"
 #include "LandscapeComponent.h"
 #include "LandscapeProxy.h"
+
+#include "NiagaraSystemInstance.h"
+#include "NiagaraComponent.h"
+#include "GaussianSplattingPointCloudActor.h"
 #include <string>
 
 DEFINE_LOG_CATEGORY(LogGaussianSplatting);
@@ -220,6 +224,302 @@ void UGaussianSplattingStep_Capture::Deactivate()
 	FLevelEditorModule& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
 	LevelEditor.OnActorSelectionChanged().RemoveAll(this);
 	GEngine->OnComponentTransformChanged().RemoveAll(this);
+}
+
+
+UNiagaraComponent* FindGaussianSplattingNiagaraComp(const UWorld* World)
+{
+	if (!World)
+		return nullptr;
+
+	TArray<AActor*> Actors;
+	UGameplayStatics::GetAllActorsOfClass(
+		World,
+		AGaussianSplattingPointCloudActor::StaticClass(),
+		Actors
+	);
+
+	for (AActor* Actor : Actors)
+	{
+		const AGaussianSplattingPointCloudActor* GSActor =
+			Cast<AGaussianSplattingPointCloudActor>(Actor);
+
+		if (!GSActor)
+			continue;
+
+		TArray<UNiagaraComponent*> NiagaraComps;
+		GSActor->GetComponents<UNiagaraComponent>(NiagaraComps);
+
+		for (UNiagaraComponent* Comp : NiagaraComps)
+		{
+			if (!Comp)
+				continue;
+
+			// 可选：校验 NiagaraSystem
+			if (Comp->GetAsset() &&
+				Comp->GetAsset()->GetName().Contains(TEXT("GaussianSplatting")))
+			{
+				return Comp;
+			}
+		}
+	}
+	
+	UE_LOG(LogTemp, Warning, TEXT("No Gaussian Splatting Niagara Component found in the world."));
+	
+	return nullptr;
+}
+
+void UGaussianSplattingStep_Capture::CaptureVideo()
+{
+	UE_LOG(LogTemp, Warning, TEXT("CaptureVideo"));
+
+	if (OnRequestTaskStart.IsBound()) {
+		if (!OnRequestTaskStart.Execute()) {
+			return;
+		}
+	}
+
+	UNiagaraComponent* NiagaraComp = FindGaussianSplattingNiagaraComp(World);
+	if (!NiagaraComp) {
+		UE_LOG(LogTemp, Error, TEXT("Niagara Component not found!"));
+		return;
+	}
+
+	NiagaraComp->SetForceSolo(true);        // 禁止 Niagara 系统调度
+	NiagaraComp->SetAutoActivate(false);
+	NiagaraComp->Activate(true);
+
+	FNiagaraSystemInstance* SystemInstance = NiagaraComp->GetSystemInstance();
+	if (!SystemInstance) {
+		UE_LOG(LogTemp, Warning, TEXT("SystemInstance is null"));
+		return;
+	}
+
+	USceneCaptureComponent2D* SceneCaptureComp = SceneCapture->GetCaptureComponent2D();
+	if (!SceneCaptureComp || !SceneCaptureComp->TextureTarget) {
+		UE_LOG(LogTemp, Error, TEXT("SceneCapture or RenderTarget is invalid"));
+		return;
+	}
+
+	RenderTarget = SceneCaptureComp->TextureTarget;
+
+	bool bCaptureEveryFrameCache = SceneCaptureComp->bCaptureEveryFrame;
+	SceneCaptureComp->bCaptureEveryFrame = false;
+	SceneCaptureComp->bAlwaysPersistRenderingState = true;
+
+	const int FramesPerCamera = 10; // 每个相机录 150 帧
+	const int TotalFrameCount = CameraActors.Num() * FramesPerCamera;
+
+	// 创建根目录
+	const FString DatabaseRootDir = WorkDir;
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+	// 清理旧目录
+	auto DeleteIfExists = [&PlatformFile](const FString& Dir) {
+		if (PlatformFile.DirectoryExists(*Dir)) {
+			PlatformFile.DeleteDirectoryRecursively(*Dir);
+		}
+	};
+
+	TaskProgressPercent = 0.0f;
+	int GlobalFrameIndex = 0; // 全局帧序号，从 0 开始，文件名用 +1
+
+	const float FixedDelta = 1.0f / FramesPerCamera;
+
+
+	for (int CamIdx = 0; CamIdx < CameraActors.Num(); ++CamIdx)
+	{
+		AActor* CameraActor = CameraActors[CamIdx];
+		if (!CameraActor) continue;
+
+		// 创建当前相机的目录
+		FString CameraDirName = FString::Printf(TEXT("cam_%02d"), CamIdx);
+		FString CameraImagesDir = FPaths::Combine(DatabaseRootDir, TEXT("images"), CameraDirName);
+		FString CameraMasksDir = FPaths::Combine(DatabaseRootDir, TEXT("masks"), CameraDirName);
+		FString CameraDepthsDir = FPaths::Combine(DatabaseRootDir, TEXT("depths"), CameraDirName);
+		PlatformFile.CreateDirectoryTree(*CameraImagesDir);
+		PlatformFile.CreateDirectoryTree(*CameraMasksDir);
+		PlatformFile.CreateDirectoryTree(*CameraDepthsDir);
+
+		DeleteIfExists(CameraImagesDir);
+		DeleteIfExists(CameraMasksDir);
+		DeleteIfExists(CameraDepthsDir);
+
+		// 设置当前相机视角
+		SceneCaptureComp->SetWorldTransform(CameraActor->GetTransform());
+
+		// 获取相机位置等信息，准备写入JSON
+		FTransform CameraTransform = CameraActor->GetTransform();
+		FVector CameraPosition = CameraTransform.GetLocation();
+		FQuat CameraRotation = CameraTransform.GetRotation();
+		// 根据需要计算其他参数如radius, camera_angle_x等
+
+		// 构造JSON对象
+		TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject());
+		JsonObject->SetNumberField(TEXT("camera_id"), CamIdx);
+		// 示例字段，实际数值需根据具体情况填写
+		JsonObject->SetNumberField(TEXT("radius"), 1.1879541381996992); // 示例值
+		JsonObject->SetNumberField(TEXT("frame_rate"), 30);
+		JsonObject->SetNumberField(TEXT("frame_num"), FramesPerCamera);
+		JsonObject->SetNumberField(TEXT("camera_angle_x"), 0.6911112070083618); // 示例值
+		TArray<TSharedPtr<FJsonValue>> CameraHW;
+		CameraHW.Add(MakeShared<FJsonValueNumber>(800));
+		CameraHW.Add(MakeShared<FJsonValueNumber>(800));
+		JsonObject->SetArrayField(TEXT("camera_hw"), CameraHW);
+
+		TArray<TSharedPtr<FJsonValue>> CameraPositionArray;
+		CameraPositionArray.Add(MakeShared<FJsonValueNumber>(CameraPosition.X));
+		CameraPositionArray.Add(MakeShared<FJsonValueNumber>(CameraPosition.Y));
+		CameraPositionArray.Add(MakeShared<FJsonValueNumber>(CameraPosition.Z));
+		JsonObject->SetArrayField(TEXT("camera_position"), CameraPositionArray);
+
+		// 写入transform_matrix
+		TArray<TArray<double>> TransformMatrix;
+		for (int i = 0; i < 4; ++i) {
+			TArray<double> Row;
+			for (int j = 0; j < 4; ++j) {
+				Row.Add(0); // 初始化
+			}
+			TransformMatrix.Add(Row);
+		}
+
+		// 填充转换矩阵数据
+		// 此处仅为示例，实际应根据相机变换矩阵填充正确值
+		// 可通过CameraTransform.ToMatrixWithScale()获取矩阵数据
+		FMatrix CameraMatrix = CameraTransform.ToMatrixWithScale();
+
+		TArray<TSharedPtr<FJsonValue>> MatrixArray;
+
+		for (int i = 0; i < 4; ++i)
+		{
+			TArray<TSharedPtr<FJsonValue>> Row;
+			for (int j = 0; j < 4; ++j)
+			{
+				Row.Add(MakeShared<FJsonValueNumber>(TransformMatrix[i][j]));
+			}
+			MatrixArray.Add(MakeShared<FJsonValueArray>(Row));
+		}
+
+		JsonObject->SetArrayField(TEXT("transform_matrix"), MatrixArray);
+
+
+		// 将JSON对象写入文件
+		FString JsonFilePath = FPaths::Combine(CameraImagesDir, TEXT("camera_info.json"));
+
+		FString JsonString;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
+		FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+
+		FFileHelper::SaveStringToFile(JsonString, *JsonFilePath);
+
+		for (int FrameIdx = 0; FrameIdx < FramesPerCamera; ++FrameIdx)
+		{
+			if (bRequestCancelTask) {
+				bRequestCancelTask = false;
+				goto CleanupAndExit;
+			}
+
+			//float Time = static_cast<float>(FrameIdx) / FramesPerCamera; // [0, 1]
+			NiagaraComp->AdvanceSimulation(1, FixedDelta);
+			NiagaraComp->MarkRenderStateDirty();
+
+
+			World->Tick(ELevelTick::LEVELTICK_All, FixedDelta);
+
+			FlushRenderingCommands();
+
+			//UGaussianSplattingEditorLibrary::FakeEngineTick(World);
+
+			FString ImageFileName = FString::Printf(TEXT("%04d.png"), FrameIdx);
+			ETextureRenderTargetFormat RenderTargetFormat = RenderTarget->RenderTargetFormat;
+			FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
+			FReadSurfaceDataFlags ReadPixelFlags(RCM_MinMax);
+			FIntRect IntRegion(0, 0, RenderTarget->SizeX, RenderTarget->SizeY);
+
+			TArray<FLinearColor> RawColors;
+			TArray<FLinearColor> FinalColors;
+			TArray<FLinearColor> MaskColors;
+
+			// === Depth Capture ===
+			if (bCaptureDepth) {
+				UGaussianSplattingEditorLibrary::FakeEngineTick(World);
+				SceneCaptureComp->CaptureSource = ESceneCaptureSource::SCS_SceneDepth;
+				SceneCaptureComp->CaptureScene();
+				TArray<FLinearColor> DepthColors;
+				RenderTargetResource->ReadLinearColorPixels(DepthColors, ReadPixelFlags, IntRegion);
+
+				float Min = FFloat16::MaxF16Float;
+				float Max = 0;
+				for (const auto& Color : DepthColors) {
+					if (Color.R < FFloat16::MaxF16Float) {
+						Min = FMath::Min(Min, Color.R);
+						Max = FMath::Max(Max, Color.R);
+					}
+				}
+
+				for (auto& Color : DepthColors) {
+					float Grayscale = 0.0f;
+					if (Color.R < FFloat16::MaxF16Float && Max > Min) {
+						Grayscale = 1.0f - (Color.R - Min) / (Max - Min);
+					}
+					Color.R = Grayscale;
+				}
+
+				FImageView DepthView(DepthColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
+				FImage GrayScaleDepthImage;
+				GrayScaleDepthImage.Init(DepthView.SizeX, DepthView.SizeY, ERawImageFormat::G16, EGammaSpace::Linear);
+				FImageCore::CopyImage(DepthView, GrayScaleDepthImage);
+				FImageUtils::SaveImageByExtension(*(FPaths::Combine(CameraDepthsDir, ImageFileName)), GrayScaleDepthImage);
+			}
+
+			// === Color Capture ===
+			UGaussianSplattingEditorLibrary::FakeEngineTick(World);
+			SceneCaptureComp->CaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
+			SceneCaptureComp->CaptureScene();
+			RenderTargetResource->ReadLinearColorPixels(RawColors, ReadPixelFlags, IntRegion);
+
+			if (bCaptureFinalColor) {
+				UGaussianSplattingEditorLibrary::FakeEngineTick(World);
+				SceneCaptureComp->CaptureSource = ESceneCaptureSource::SCS_FinalColorHDR;
+				SceneCaptureComp->CaptureScene();
+				RenderTargetResource->ReadLinearColorPixels(FinalColors, ReadPixelFlags, IntRegion);
+			} else {
+				FinalColors = RawColors;
+			}
+
+			// === Generate Mask ===
+			MaskColors.SetNum(RawColors.Num());
+			for (int j = 0; j < RawColors.Num(); j++) {
+				const FLinearColor& RawColor = RawColors[j];
+				FLinearColor& FinalColor = FinalColors[j];
+				FinalColor = UGaussianSplattingEditorLibrary::LinearToSRGB(FinalColor);
+				float Alpha = 1.0f - RawColor.A;
+				float Mask = Alpha > 0.0f ? 1.0f : 0.0f;
+				MaskColors[j] = FLinearColor(Mask, Mask, Mask, 1.0f);
+				FinalColor.A = Alpha;
+			}
+
+			// === Save Images ===
+			FImageView ImageView(FinalColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
+			FImageView MaskView(MaskColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
+			FImageUtils::SaveImageByExtension(*(FPaths::Combine(CameraImagesDir, ImageFileName)), ImageView);
+			FImageUtils::SaveImageByExtension(*(FPaths::Combine(CameraMasksDir, ImageFileName)), MaskView);
+
+			ReceiveMessage(FString::Printf(TEXT("Capturing %s (Camera %d, Frame %d)"), *ImageFileName, CamIdx + 1, FrameIdx + 1));
+
+			GlobalFrameIndex++;
+			TaskProgressPercent = static_cast<float>(GlobalFrameIndex) / (CameraActors.Num() * FramesPerCamera);
+		}
+	}
+
+CleanupAndExit:
+	TaskProgressPercent = 0.0f;
+	ReceiveMessage(TEXT("CaptureVideo Finished!"));
+
+	SceneCaptureComp->bAlwaysPersistRenderingState = true;
+	SceneCaptureComp->bCaptureEveryFrame = bCaptureEveryFrameCache;
+
+	OnTaskFinished.Broadcast();
 }
 
 void UGaussianSplattingStep_Capture::Capture()

@@ -90,6 +90,9 @@ public:
 	UFUNCTION(CallInEditor, meta = (DisplayPriority = 3))
 	void NextCamera();
 
+	UFUNCTION(CallInEditor, meta = (DisplayPriority = 4))
+	void CaptureVideo();
+
 	void SetSelectionByComponents(const TArray<UActorComponent*>& InSourceComponents);
 
 	void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh);
