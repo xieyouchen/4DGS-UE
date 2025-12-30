@@ -1,5 +1,7 @@
 import math
 import unreal
+import os, json, sys
+import shutil
 
 class MRQ:
     def __init__(self, camera_actor: unreal.Actor, seq_asset_path: str, output_path: str, n_samples: int = 4):
@@ -187,7 +189,7 @@ class MRQ:
         capture = unreal.AutomatedLevelSequenceCapture()
         capture.level_sequence_asset = unreal.SoftObjectPath(seq_path)
         capture.settings.output_directory = unreal.DirectoryPath(output_dir)
-        capture.settings.output_format = "{sequence}_{frame}"
+        capture.settings.output_format = "{frame}"
         capture.settings.zero_pad_frame_numbers = 5
         capture.settings.use_custom_frame_rate = True
         capture.settings.custom_frame_rate = unreal.FrameRate(30, 1)
@@ -202,6 +204,105 @@ class MRQ:
 
         # 开始渲染
         unreal.SequencerTools.render_movie(capture, unreal.OnRenderMovieStopped())
+
+    # 在 MRQ 类中添加以下方法
+    def save_camera_parameters(self, positions, output_filename="cameras_parameters.json"):
+        import json
+        import os
+        import math
+        camera_data_list = []
+        
+        camera_component = camera_actor.get_cine_camera_component()
+        fov_deg = camera_component.field_of_view
+        fov_rad = math.radians(fov_deg)
+
+        for idx, pos in enumerate(positions):
+            # 计算旋转：看向原点 (0,0,0)
+            rotation = unreal.MathLibrary.find_look_at_rotation(pos, unreal.Vector(0, 0, 0))
+            
+            # 使用 Unreal 函数获取 4x4 矩阵的所有轴和位置
+            # 前向轴(X), 右侧轴(Y), 向上轴(Z)
+            fwd = rotation.get_forward_vector()
+            right = rotation.get_right_vector()
+            up = rotation.get_up_vector()
+
+            # 构造变换矩阵 (Transform Matrix)
+            # 注意：这里构造的是 [Rotation | Translation] 格式的矩阵
+            # 按照你之前提供的示例 JSON 格式：
+            matrix_list = [
+                [fwd.x, right.x, up.x, pos.x],
+                [fwd.y, right.y, up.y, pos.y],
+                [fwd.z, right.z, up.z, pos.z],
+                [0.0,   0.0,     0.0,  1.0]
+            ]
+
+            camera_info = {
+                "camera_id": idx,
+                "radius": self.radius,
+                "frame_rate": 30,
+                "frame_num": 150,
+                "camera_angle_x": fov_rad,
+                "camera_hw": [800, 800],
+                "camera_position": [pos.x, pos.y, pos.z],
+                "transform_matrix": matrix_list
+            }
+            camera_data_list.append(camera_info)
+
+        # 路径处理
+        save_dir = r'D:\Softwares\Epic Games\UE_5.5\Saved\RenderOutput'
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+            
+        full_path = os.path.join(save_dir, output_filename)
+        
+        with open(full_path, 'w') as f:
+            json.dump(camera_data_list, f, indent=4)
+        
+        unreal.log(f"SUCCESS: Saved parameters to {full_path}")
+
+    def post_process(self):
+        # 使用原始字符串解决路径转义问题
+        path = r'D:\Softwares\Epic Games\UE_5.5\Saved\RenderOutput\camera_1'
+        items_per_folder = 150
+
+        # 获取目录下所有的 png 文件并排序，确保逻辑正确
+        all_files = sorted([f for f in os.listdir(path) if f.endswith('.png')])
+        all_files = [all_files[0]] + all_files[-1:] + all_files[1:-1] 
+        print(all_files)
+
+        total_files = len(all_files)
+
+        # 计算需要多少个文件夹
+        # 使用整除计算文件夹数量
+        num_folders = total_files // items_per_folder
+
+        print(f"检测到 {total_files} 张图片，将分配到 {num_folders} 个文件夹中。")
+
+        for i in range(num_folders):
+            # 1. 创建文件夹 cam_00, cam_01...
+            folder_name = f"cam_{i:02d}"
+            folder_path = os.path.join(path, folder_name)
+            
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path)
+            
+            # 2. 移动该组的 150 张图片
+            for j in range(items_per_folder):
+                # 计算当前图片在总列表中的索引
+                file_idx = i * items_per_folder + j
+                
+                if file_idx < total_files:
+                    src_name = all_files[file_idx]
+                    src_path = os.path.join(path, src_name)
+                    
+                    # 目标文件名建议保持原样，或者按你的需求改为 0.png, 1.png...
+                    # 这里演示改为 0.png, 1.png 格式
+                    dst_name = f"{j:04d}.png" 
+                    dst_path = os.path.join(folder_path, dst_name)
+                    
+                    shutil.move(src_path, dst_path)
+
+        print("post_process 处理完成！")
 
     def test(self):
         self.remove_all_sections()
@@ -222,6 +323,11 @@ class MRQ:
         output_dir = f"{self.output_path}/camera_{idx}"   
         # 一次性渲染 300 帧
         mrq.render_to_png_sequence(self.seq_asset_path, output_dir)
+        # 导出参数 JSON
+        self.save_camera_parameters(positions)
+
+        self.post_process()
+
 
         
 
