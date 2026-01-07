@@ -2,27 +2,32 @@ import math
 import unreal
 import os, json, sys
 import shutil
+import random
+
+SCALE = 0.01
+random.seed(42)
 
 class MRQ:
-    def __init__(self, camera_actor: unreal.Actor, seq_asset_path: str, output_path: str, n_samples: int = 4):
+    def __init__(self, camera_actor: unreal.Actor, seq_asset_path: str, output_path: str, n_samples: int = 4, res_X: int = 800, res_Y: int = 800):
         self.initial_location = camera_actor.get_actor_location()
         self.initial_rotation = camera_actor.get_actor_rotation()
         self.radius = self.initial_location.length()
         self.seq_asset_path = seq_asset_path
-        self.output_path = output_path      
         self.n_samples = n_samples
+
+        self.output_path = output_path  
+        self.output_dir = f"{self.output_path}/camera{n_samples}"
+        os.makedirs(self.output_dir, exist_ok=True)   
+
+        self.res_X = res_X
+        self.res_Y = res_Y
+        self.camera_actor = camera_actor
+
 
         self.track = self.find_track("CineCameraActor")
 
         if self.radius == 0.0:
             raise ValueError("Camera is at origin; cannot orbit.")
-        
-    def start(self):
-        positions = self.get_orbit_positions(self.n_samples)
-        for i in range(self.n_samples):
-            mrq.set_camera_to_position(positions[i])
-            mrq.render_to_png_sequence(seq_path=self.seq_asset_path, output_dir=mrq.output_path)
-        mrq.reset_camera()
 
     def find_track(self, camera_label: str):
         seq_asset_path = self.seq_asset_path
@@ -105,41 +110,20 @@ class MRQ:
 
         return [quat.rotate_vector(p) for p in points]
 
-    def get_orbit_positions(self, n_samples: int):
+    def get_orbit_positions(self, n_samples: int, zooming_radius: float = 1.0):
         unit = self._fibonacci_sphere(n_samples)
         aligned = self._align_first_point_to_initial_dir(unit)
-        unit = [p * self.radius for p in aligned]
-        for i, p in enumerate(unit):
-            print(i, p)
+        unit = [p * self.radius * zooming_radius for p in aligned]
         return unit
-
-    def set_camera_to_position(self, position: unreal.Vector):
-        # 设置旋转：看向原点
-        rotation = unreal.MathLibrary.find_look_at_rotation(position, unreal.Vector(0, 0, 0))
-
-        self.set_sequencer_camera_transform(
-            seq_asset_path="/Game/Sequencer/start",
-            camera_label="CineCameraActor",
-            location=position,
-            rotation=rotation,
-            frame=150
-        )
 
     def reset_camera(self):
         self.set_sequencer_camera_transform(
-            seq_asset_path="/Game/Sequencer/start",
-            camera_label="CineCameraActor",
             location=self.initial_location,
             rotation=self.initial_rotation,
             start_frame = 0,
             duration_frames = 1
         )
 
-    def orbit_and_apply(self, index: int, n_samples: int):
-        positions = self.get_orbit_positions(n_samples)
-        if not (0 <= index < len(positions)):
-            raise IndexError(f"Index {index} out of range.")
-        self.set_camera_to_position(positions[index])
 
     def set_sequencer_camera_transform(
         self,
@@ -193,8 +177,8 @@ class MRQ:
         capture.settings.zero_pad_frame_numbers = 5
         capture.settings.use_custom_frame_rate = True
         capture.settings.custom_frame_rate = unreal.FrameRate(30, 1)
-        capture.settings.resolution.res_x = 400
-        capture.settings.resolution.res_y = 400
+        capture.settings.resolution.res_x = self.res_X
+        capture.settings.resolution.res_y = self.res_Y
 
         # 设置为 PNG 图像序列
         capture.set_image_capture_protocol_type(
@@ -205,114 +189,158 @@ class MRQ:
         # 开始渲染
         unreal.SequencerTools.render_movie(capture, unreal.OnRenderMovieStopped())
 
-    # 在 MRQ 类中添加以下方法
-    def save_camera_parameters(self, positions, output_filename="cameras_parameters.json"):
+    def transofrm_rotator(self, rotation: unreal.Rotator):
+        new_rotation = rotation.copy()
+        new_rotation.roll -= 90
+        new_rotation.pitch = rotation.yaw
+        new_rotation.yaw = 0
+        return new_rotation
+    
+    
+
+    def save_camera_parameters(self, transforms, output_filename="camera_parameters.json", pattern="customed"):
         import json
         import os
         import math
+        import unreal
+
         camera_data_list = []
-        
-        camera_component = camera_actor.get_cine_camera_component()
+        # 获取相机内参 (假设所有帧一致)
+        camera_component = self.camera_actor.get_cine_camera_component()
         fov_deg = camera_component.field_of_view
         fov_rad = math.radians(fov_deg)
 
-        for idx, pos in enumerate(positions):
-            # 计算旋转：看向原点 (0,0,0)
-            rotation = unreal.MathLibrary.find_look_at_rotation(pos, unreal.Vector(0, 0, 0))
+        for idx, (pos, rotation) in enumerate(transforms):
+            if(idx == 0):
+                continue
             
-            # 使用 Unreal 函数获取 4x4 矩阵的所有轴和位置
-            # 前向轴(X), 右侧轴(Y), 向上轴(Z)
-            fwd = rotation.get_forward_vector()
-            right = rotation.get_right_vector()
-            up = rotation.get_up_vector()
+            idx = idx - 1
+            scale = 0.01  # cm -> m
 
-            # 构造变换矩阵 (Transform Matrix)
-            # 注意：这里构造的是 [Rotation | Translation] 格式的矩阵
-            # 按照你之前提供的示例 JSON 格式：
-            matrix_list = [
-                [fwd.x, right.x, up.x, pos.x],
-                [fwd.y, right.y, up.y, pos.y],
-                [fwd.z, right.z, up.z, pos.z],
-                [0.0,   0.0,     0.0,  1.0]
-            ]
+            if pattern == "csdn":
+                # 1. 获取 UE 世界坐标系下的基向量 (World Space Vectors)
+                # UE: Forward(X), Right(Y), Up(Z)
+                new_rotation = self.transofrm_rotator(rotation)
+                fwd = new_rotation.get_forward_vector() # UE 中的前 (X)
+                right = new_rotation.get_right_vector() # UE 中的右 (Y)
+                up = new_rotation.get_up_vector()       # UE 中的上 (Z)
+                
+                # 2. 定义相机在 NeRF 坐标系下的方向向量 (Camera-to-World 矩阵的列)
+                # 我们需要：
+                # 列1: 相机的“右”在 NeRF 世界里的坐标
+                # 列2: 相机的“下”在 NeRF 世界里的坐标
+                # 列3: 相机的“前”在 NeRF 世界里的坐标
+                matrix_list = [
+                    [fwd.x, right.x, up.x,    pos.x * scale], # Row for NeRF X
+                    [fwd.y, right.y, up.y,    pos.z * scale], # Row for NeRF Y
+                    [fwd.z, right.z, up.z,    pos.y * scale], # Row for NeRF Z
+                    [0.0,      0.0,   0.0,   1.0]           # Row for W
+                ]
+
+            elif pattern == "customed_wrong":
+                new_rotation = rotation
+                fwd = new_rotation.get_forward_vector() # UE 中的前 (X)
+                right = new_rotation.get_right_vector() # UE 中的右 (Y)
+                up = new_rotation.get_up_vector()       # UE 中的上 (Z)
+                matrix_list = [
+                    [right.x, up.x, -fwd.x,   pos.y * scale], # Row for NeRF X
+                    [right.y, up.y, -fwd.y,   pos.z * scale], # Row for NeRF Y
+                    [right.z, up.z, -fwd.z,   -pos.x * scale], # Row for NeRF Z
+                    [0.0,      0.0,   0.0,   1.0]           # Row for W
+                ]
+
+            elif pattern == "customed":
+                new_rotation = rotation
+                fwd = new_rotation.get_forward_vector() # UE 中的前 (X)
+                right = new_rotation.get_right_vector() # UE 中的右 (Y)
+                up = new_rotation.get_up_vector()       # UE 中的上 (Z)
+                matrix_list = [
+                    [right.x, up.x, -fwd.x, pos.x * scale], # Row for NeRF X
+                    [right.y, up.y, -fwd.y, pos.y * scale], # Row for NeRF Y
+                    [right.z, up.z, -fwd.z, pos.z * scale], # Row for NeRF Z
+                    [0.0,      0.0,   0.0, 1.0]           # Row for W
+                ]
+                unreal.log(f"matrix_list: {pattern}")
+
+            elif pattern == "nerf":
+                new_rotation = rotation
+                fwd = new_rotation.get_forward_vector() # UE 中的前 (X)
+                right = new_rotation.get_right_vector() # UE 中的右 (Y)
+                up = new_rotation.get_up_vector()       # UE 中的上 (Z)
+                matrix_list = [
+                    [right.x, -up.x, fwd.x,   pos.x * scale], # Row for NeRF X
+                    [right.y, -up.y, fwd.y,   pos.y * scale], # Row for NeRF Y
+                    [right.z, -up.z, fwd.z,   pos.z * scale], # Row for NeRF Z
+                    [0.0,      0.0,   0.0,   1.0]           # Row for W
+                ]
+
+            # matrix_list = [[round(val, 6) for val in row] for row in matrix_list]
 
             camera_info = {
                 "camera_id": idx,
-                "radius": self.radius,
-                "frame_rate": 30,
-                "frame_num": 150,
+                "file_path": f"images/frame_{idx:05d}.png", # 对应你的渲染命名
                 "camera_angle_x": fov_rad,
-                "camera_hw": [800, 800],
-                "camera_position": [pos.x, pos.y, pos.z],
+                "camera_hw": [self.res_Y, self.res_X], # 注意：通常是 [H, W]
                 "transform_matrix": matrix_list
             }
             camera_data_list.append(camera_info)
 
         # 路径处理
-        save_dir = r'D:\Softwares\Epic Games\UE_5.5\Saved\RenderOutput'
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-            
-        full_path = os.path.join(save_dir, output_filename)
-        
-        with open(full_path, 'w') as f:
+        save_path = os.path.join(self.output_dir, output_filename)
+        with open(save_path, 'w') as f:
             json.dump(camera_data_list, f, indent=4)
         
-        unreal.log(f"SUCCESS: Saved parameters to {full_path}")
+        unreal.log(f"Successfully exported {len(transforms)} frames to {save_path}")
 
-    def post_process(self):
-        # 使用原始字符串解决路径转义问题
-        path = r'D:\Softwares\Epic Games\UE_5.5\Saved\RenderOutput\camera_1'
-        items_per_folder = 150
+    def get_camera_rotation(self, position: unreal.Vector, random_roll=False):
+        return self.get_camera_quat(position, random_roll).rotator()
+    
+    def get_camera_quat(self, position: unreal.Vector, random_roll=False):
+        # 1. Look-at（Forward 指向原点，Up 尽量朝世界 Z）
+        base_rot = unreal.MathLibrary.find_look_at_rotation(
+            position, unreal.Vector(0, 0, 0)
+        )
 
-        # 获取目录下所有的 png 文件并排序，确保逻辑正确
-        all_files = sorted([f for f in os.listdir(path) if f.endswith('.png')])
-        all_files = [all_files[0]] + all_files[-1:] + all_files[1:-1] 
-        print(all_files)
+        if not random_roll:
+            return base_rot.quaternion()
 
-        total_files = len(all_files)
+        # 2. Forward 轴
+        forward = base_rot.get_forward_vector().normal()
 
-        # 计算需要多少个文件夹
-        # 使用整除计算文件夹数量
-        num_folders = total_files // items_per_folder
+        import random
+        # 3. 随机 roll
+        roll_rad = random.uniform(0.0, 2.0 * math.pi)
 
-        print(f"检测到 {total_files} 张图片，将分配到 {num_folders} 个文件夹中。")
+        # 4. Axis-angle → quat（必须手写）
+        half = roll_rad * 0.5
+        s = math.sin(half)
 
-        for i in range(num_folders):
-            # 1. 创建文件夹 cam_00, cam_01...
-            folder_name = f"cam_{i:02d}"
-            folder_path = os.path.join(path, folder_name)
-            
-            if not os.path.exists(folder_path):
-                os.makedirs(folder_path)
-            
-            # 2. 移动该组的 150 张图片
-            for j in range(items_per_folder):
-                # 计算当前图片在总列表中的索引
-                file_idx = i * items_per_folder + j
-                
-                if file_idx < total_files:
-                    src_name = all_files[file_idx]
-                    src_path = os.path.join(path, src_name)
-                    
-                    # 目标文件名建议保持原样，或者按你的需求改为 0.png, 1.png...
-                    # 这里演示改为 0.png, 1.png 格式
-                    dst_name = f"{j:04d}.png" 
-                    dst_path = os.path.join(folder_path, dst_name)
-                    
-                    shutil.move(src_path, dst_path)
+        roll_quat = unreal.Quat(
+            forward.x * s,
+            forward.y * s,
+            forward.z * s,
+            math.cos(half)
+        )
 
-        print("post_process 处理完成！")
+        # 5. 组合旋转（注意顺序）
+        final_quat = roll_quat * base_rot.quaternion()
 
-    def test(self):
+        return final_quat
+
+    def test(self, zoom_factor=1):
         self.remove_all_sections()
 
-        positions = self.get_orbit_positions(self.n_samples)
-        
+        positions = self.get_orbit_positions(self.n_samples, zoom_factor)
+
+        transforms = []
+
         for idx, pos in enumerate(positions):
             print(f"Position {idx}: {pos}")
             start_frame = idx * 150
-            rotation = unreal.MathLibrary.find_look_at_rotation(pos, unreal.Vector(0,0,0))
+            
+            quat = self.get_camera_quat(pos, True)
+            rotation = quat.rotator()
+
             mrq.set_sequencer_camera_transform(
                 pos,
                 rotation,
@@ -320,16 +348,15 @@ class MRQ:
                 duration_frames=150
             )
 
-        output_dir = f"{self.output_path}/camera_{idx}"   
+            transforms.append((pos, rotation))
+
+
         # 一次性渲染 300 帧
-        mrq.render_to_png_sequence(self.seq_asset_path, output_dir)
+        mrq.render_to_png_sequence(self.seq_asset_path, self.output_dir)
         # 导出参数 JSON
-        self.save_camera_parameters(positions)
-
-        self.post_process()
+        self.save_camera_parameters(transforms)
 
 
-        
 
 # 假设你已经选中了一个 CineCameraActor
 selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
@@ -343,13 +370,16 @@ if not camera_actor:
     raise RuntimeError("Please select a CameraActor in the level.")
 
 # 创建 mrq
-mrq = MRQ(camera_actor, "/Game/Sequencer/start", "../../../Saved/RenderOutput", 2)
+mrq = MRQ(camera_actor, "/Game/Sequencer/start", "../../../Saved/RenderOutput", 20)
 
 # mrq.start()
 mrq.test()
 
 # 恢复原始状态
-# mrq.reset_camera()
+mrq.reset_camera()
+
+
+
 
 
 
