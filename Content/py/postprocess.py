@@ -14,7 +14,7 @@ total_files = len(all_files)
 
 # 计算需要多少个文件夹
 # 使用整除计算文件夹数量
-num_folders = total_files // items_per_folder - 1
+num_folders = total_files // items_per_folder
 
 print(f"检测到 {total_files} 张图片，将分配到 {num_folders} 个文件夹中。")
 
@@ -27,9 +27,9 @@ for i in range(num_folders):
         os.makedirs(folder_path)
     
     # 2. 移动该组的 150 张图片
-    for j in range(items_per_folder - 1):
+    for j in range(items_per_folder):
         # 计算当前图片在总列表中的索引
-        file_idx = (i+1) * items_per_folder + j
+        file_idx = (i) * items_per_folder + j
         
         if file_idx < total_files:
             src_name = all_files[file_idx]

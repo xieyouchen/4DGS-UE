@@ -198,7 +198,7 @@ class MRQ:
     
     
 
-    def save_camera_parameters(self, transforms, output_filename="camera_parameters.json", pattern="customed"):
+    def save_camera_parameters(self, transforms, output_filename="camera_parameters.json", pattern="nerf"):
         import json
         import os
         import math
@@ -210,11 +210,7 @@ class MRQ:
         fov_deg = camera_component.field_of_view
         fov_rad = math.radians(fov_deg)
 
-        for idx, (pos, rotation) in enumerate(transforms):
-            if(idx == 0):
-                continue
-            
-            idx = idx - 1
+        for idx, (pos, rotation) in enumerate(transforms):        
             scale = 0.01  # cm -> m
 
             if pattern == "csdn":
